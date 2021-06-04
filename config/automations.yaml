@@ -1,0 +1,379 @@
+- id: 0f517a12e6ae4f89925a98a852afbf38
+  alias: Admin - Init Relays at Boot
+  trigger:
+  - platform: homeassistant
+    event: start
+  action:
+  - service: switch.turn_off
+    target:
+      entity_id:
+      - switch.door_close
+      - switch.door_open
+      - switch.gate_close
+      - switch.gate_open
+  initial_state: 'on'
+  mode: single
+- id: '1619814471320'
+  alias: SafeCOOP - Close at dawn
+  description: Close the door and the gate of the coop, when the sun set or when it's
+    dark. The gate is closed 5mn after the door, in case a hen did not enter yet.
+  trigger:
+  - platform: sun
+    event: sunset
+    offset: -00:30:00
+  - platform: sun
+    event: sunset
+    offset: 00:31:00
+  - platform: state
+    entity_id: binary_sensor.brightness
+    from: 'on'
+    to: 'off'
+  - platform: time_pattern
+    minutes: /30
+    hours: '*'
+    seconds: '*'
+  condition:
+  - condition: state
+    entity_id: binary_sensor.coop_open
+    state: 'on'
+  - condition: sun
+    after: sunset
+    after_offset: -00:31:00
+    before: sunset
+    before_offset: 03:00:00
+  - condition: or
+    conditions:
+    - condition: sun
+      after: sunset
+      after_offset: 00:30:00
+    - condition: state
+      entity_id: binary_sensor.brightness
+      state: 'off'
+  action:
+  - service: mqtt.publish
+    data:
+      topic: coopassistant/autocoop
+      payload: auto_close
+      qos: '2'
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: binary_sensor.door_closed
+        state: 'off'
+      sequence:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.coop_door
+      - delay:
+          hours: 0
+          minutes: 5
+          seconds: 0
+          milliseconds: 0
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: binary_sensor.gate_closed
+        state: 'off'
+      sequence:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.coop_gate
+      - wait_for_trigger:
+        - platform: state
+          entity_id: binary_sensor.gate_closed
+          to: 'on'
+        timeout: '10'
+  - condition: state
+    entity_id: binary_sensor.coop_open
+    state: 'on'
+  - service: mqtt.publish
+    data:
+      topic: coopassistant/alert/automation_issue
+      payload: 'ERROR when closing the coop: {{states(''sensor.coop_state'')}}'
+      qos: '2'
+  mode: single
+- id: c44d1366d9854472837271cb40b75340
+  alias: SafeCOOP - Open at dusk
+  description: Open the door and the gate of the coop, when the sun rise.
+  trigger:
+  - platform: sun
+    event: sunrise
+  - platform: sun
+    event: sunrise
+    offset: 01:01:00
+  - platform: state
+    entity_id: binary_sensor.brightness
+    from: 'off'
+    to: 'on'
+  - platform: sun
+    event: sunrise
+    offset: 00:30:00
+  - platform: time_pattern
+    hours: '*'
+    minutes: /30
+    seconds: '*'
+  condition:
+  - condition: state
+    entity_id: binary_sensor.coop_fully_open
+    state: 'off'
+  - condition: sun
+    after: sunrise
+    before: sunrise
+    before_offset: 05:00:00
+  - condition: or
+    conditions:
+    - condition: sun
+      after: sunrise
+      after_offset: 01:00:00
+    - condition: state
+      entity_id: binary_sensor.brightness
+      state: 'on'
+  action:
+  - service: mqtt.publish
+    data:
+      topic: coopassistant/autocoop
+      payload: auto_open
+      qos: '2'
+  - service: cover.open_cover
+    target:
+      entity_id: cover.coop_door
+  - wait_for_trigger:
+    - platform: state
+      entity_id: binary_sensor.door_fully_open
+      to: 'on'
+    timeout: '30'
+  - service: cover.open_cover
+    target:
+      entity_id: cover.coop_gate
+  - wait_for_trigger:
+    - platform: state
+      entity_id: binary_sensor.gate_fully_open
+      to: 'on'
+    timeout: '10'
+  - condition: state
+    entity_id: binary_sensor.coop_fully_open
+    state: 'off'
+  - service: mqtt.publish
+    data:
+      topic: coopassistant/alert/automation_issue
+      payload: 'ERROR when opening the coop: {{states(''sensor.coop_state'')}}'
+      qos: '2'
+  mode: single
+- id: door_opening_autostop
+  alias: Autostop  - Door Opening
+  description: Stop door opening when the door is fully open or when a timeout is
+    reached. Raise an event if the door did not fully open.
+  trigger:
+  - platform: state
+    entity_id: switch.door_open
+    to: 'on'
+  condition: []
+  action:
+  - wait_for_trigger:
+    - platform: state
+      entity_id: switch.door_open
+      to: 'off'
+    - platform: state
+      entity_id: binary_sensor.door_fully_open
+      to: 'on'
+    timeout: '26'
+  - choose:
+    - alias: Door did not open!
+      conditions:
+      - condition: template
+        value_template: '{{ not wait.trigger }}'
+      sequence:
+      - alias: 'EMERGENCY STOP: door_open'
+        service: switch.turn_off
+        target:
+          entity_id: switch.door_open
+      - service: mqtt.publish
+        data:
+          topic: coopassistant/alert/opening_issue
+          payload: Door did not open!
+          qos: 2
+    default:
+    - service: switch.turn_off
+      target:
+        entity_id: switch.door_open
+  mode: single
+- id: door_closing_autostop
+  alias: Autostop  - Door Closing
+  description: Stop door closing when a timeout is reached. Raise an event if the
+    gate did not effectively close.
+  trigger:
+  - platform: state
+    entity_id: switch.door_close
+    to: 'on'
+  condition: []
+  action:
+  - wait_for_trigger:
+    - platform: state
+      entity_id: switch.door_close
+      to: 'off'
+    timeout: '26'
+  - choose:
+    - conditions:
+      - condition: state
+        entity_id: binary_sensor.door_closed
+        state: 'on'
+      sequence:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.door_close
+    - conditions:
+      - condition: template
+        value_template: '{{ not wait.trigger }}'
+      sequence:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.door_close
+      - service: mqtt.publish
+        data:
+          topic: coopassistant/alert/opening_issue
+          payload: Door did not close!
+          qos: '2'
+    default:
+    - service: switch.turn_off
+      target:
+        entity_id: switch.door_close
+  mode: single
+- id: gate_opening_autostop
+  alias: Autostop  - Gate Opening
+  description: Stop gate opening when the gate is fully open or when a timeout is
+    reached. Raise an event if the gate did not fully open.
+  trigger:
+  - platform: state
+    entity_id: switch.gate_open
+    to: 'on'
+  condition: []
+  action:
+  - wait_for_trigger:
+    - platform: state
+      entity_id: switch.gate_open
+      to: 'off'
+    - platform: state
+      entity_id: binary_sensor.gate_fully_open
+      to: 'on'
+    timeout: '10'
+  - choose:
+    - alias: Gate did not open!
+      conditions:
+      - condition: template
+        value_template: '{{ not wait.trigger }}'
+      sequence:
+      - alias: 'EMERGENCY STOP: gate_open'
+        service: switch.turn_off
+        target:
+          entity_id: switch.gate_open
+      - service: mqtt.publish
+        data:
+          topic: coopassistant/alert/opening_issue
+          payload: Gate did not open!
+          qos: 2
+    default:
+    - service: switch.turn_off
+      target:
+        entity_id: switch.gate_open
+  mode: single
+- id: gate_closing_autostop
+  alias: Autostop  - Gate Closing
+  description: Stop gate closing when the gate is closed or when a timeout is reached.
+    Raise an event if the gate did not effectively close.
+  trigger:
+  - platform: state
+    entity_id: switch.gate_close
+    to: 'on'
+  condition: []
+  action:
+  - wait_for_trigger:
+    - platform: state
+      entity_id: switch.gate_close
+      to: 'off'
+    - platform: state
+      entity_id: binary_sensor.gate_closed
+      to: 'on'
+    timeout: '9'
+  - choose:
+    - alias: Gate did not close!
+      conditions:
+      - condition: template
+        value_template: '{{ not wait.trigger }}'
+      sequence:
+      - alias: 'EMERGENCY STOP: gate_close'
+        service: switch.turn_off
+        target:
+          entity_id: switch.gate_close
+      - service: mqtt.publish
+        data:
+          topic: coopassistant/alert/opening_issue
+          payload: Gate did not close!
+          qos: 2
+    default:
+    - service: switch.turn_off
+      target:
+        entity_id: switch.gate_close
+  mode: single
+- alias: Master Control - Gate
+  initial_state: 'on'
+  trigger:
+    platform: mqtt
+    topic: coopassistant/cover/coop_gate/set
+  action:
+  - choose:
+    - conditions: '{{ trigger.payload == ''OPEN'' }}'
+      sequence:
+      - service: cover.open_cover
+        target:
+          entity_id: cover.coop_gate
+    - conditions: '{{ trigger.payload == ''CLOSE'' }}'
+      sequence:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.coop_gate
+    - conditions: '{{ trigger.payload == ''STOP'' }}'
+      sequence:
+      - service: cover.stop_cover
+        target:
+          entity_id: cover.coop_gate
+  mode: single
+  id: master_control_gate
+- alias: Master Control - Door
+  initial_state: 'on'
+  trigger:
+    platform: mqtt
+    topic: coopassistant/cover/coop_door/set
+  action:
+  - choose:
+    - conditions: '{{ trigger.payload == ''OPEN'' }}'
+      sequence:
+      - service: cover.open_cover
+        target:
+          entity_id: cover.coop_door
+    - conditions: '{{ trigger.payload == ''CLOSE'' }}'
+      sequence:
+      - service: cover.close_cover
+        target:
+          entity_id: cover.coop_door
+    - conditions: '{{ trigger.payload == ''STOP'' }}'
+      sequence:
+      - service: cover.stop_cover
+        target:
+          entity_id: cover.coop_door
+  mode: single
+  id: master_control_door
+- id: '1621030651657'
+  alias: Admin - Ping to Master
+  description: Send mqtt event every 5mn.
+  trigger:
+  - platform: time_pattern
+    minutes: /5
+  - platform: homeassistant
+    event: start
+  condition: []
+  action:
+  - service: mqtt.publish
+    data:
+      topic: homeassistant/sensor/coop_ping
+      payload_template: '{{ now() }}'
+  mode: single

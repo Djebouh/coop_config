@@ -1,0 +1,235 @@
+
+
+# Enables the frontend
+frontend:
+  # javascript_version: latest
+  themes: !include_dir_merge_named themes/
+
+# Enables configuration UI
+config:
+
+system_health:
+
+logger:
+  default: info
+
+# Checks for available updates
+updater:
+
+# Enables support for tracking state changes over time
+history:
+
+# View all events in a logbook
+logbook:
+  exclude:
+    entities:
+      - automation.ping
+
+recorder:
+  purge_keep_days: 5
+
+shell_command:
+  reboot_pi: 'sudo reboot'
+
+
+# Track the sun
+sun:
+
+binary_sensor:
+  - platform: rpi_gpio
+    ports:
+      17: gate closed
+      27: gate fully open
+      23: door fully open
+      24: door closed
+    invert_logic: true
+  - platform: mqtt
+    name: brightness
+    device_class: light
+    state_topic: "coopassistant/binary_sensor/brightness/state"
+    payload_on: "on"
+    payload_off: "off"
+    qos: 0
+
+switch:
+  - platform: rpi_gpio
+    ports:
+      20: Door close # 1, orange
+      21: Door open # 2, yellow
+      26: Gate close # 3,  green
+      19: Gate open # 4, blue
+    invert_logic: true
+
+
+cover:
+  - platform: template
+    covers:
+      coop_door:
+        device_class: door
+        friendly_name: "Coop door"
+        position_template:  >-
+          {{ 100 if is_state('binary_sensor.door_fully_open', 'on') else (0 if is_state('binary_sensor.door_closed', 'on') else 50) }}
+        open_cover:
+          - service: switch.turn_off
+            entity_id: switch.door_close
+          - condition: state
+            entity_id: binary_sensor.door_fully_open
+            state: "off"
+          - service: switch.turn_on
+            entity_id: switch.door_open
+        close_cover:
+          - service: switch.turn_off
+            entity_id: switch.door_open
+          - condition: state
+            entity_id: binary_sensor.door_closed
+            state: "off"
+          - service: switch.turn_on
+            entity_id: switch.door_close
+        stop_cover:
+          - service: switch.turn_off
+            entity_id: switch.door_close
+          - service: switch.turn_off
+            entity_id: switch.door_open
+
+      coop_gate:
+        device_class: garage
+        friendly_name: "Coop gate"
+        position_template: >-
+          {{ 100 if is_state('binary_sensor.gate_fully_open', 'on') else (0 if is_state('binary_sensor.gate_closed', 'on') else 50) }}
+        open_cover:
+          - service: switch.turn_off
+            entity_id: switch.gate_close
+          - condition: state
+            entity_id: binary_sensor.gate_fully_open
+            state: "off"
+          - service: switch.turn_on
+            entity_id: switch.gate_open
+        close_cover:
+          - service: switch.turn_off
+            entity_id: switch.gate_open
+          - condition: state
+            entity_id: binary_sensor.gate_closed
+            state: "off"
+          - service: switch.turn_on
+            entity_id: switch.gate_close
+        stop_cover:
+          - service: switch.turn_off
+            entity_id: switch.gate_close
+          - service: switch.turn_off
+            entity_id: switch.gate_open
+
+template:
+  - binary_sensor:
+      - name: coop open
+        device_class: safety
+        state: "{{ is_state('binary_sensor.door_closed', 'off') or is_state('binary_sensor.gate_closed', 'off') }}"
+      - name: coop fully open
+        device_class: opening
+        state: "{{ is_state('binary_sensor.door_fully_open', 'on') and is_state('binary_sensor.gate_fully_open', 'on') }}"
+  - sensor:
+      - name: gate_state
+        icon: mdi:gate
+        state: >
+          {% if is_state('binary_sensor.gate_closed', 'on') %}
+            closed
+          {% elif is_state('binary_sensor.gate_fully_open', 'on') %}
+            fully open
+          {% else %}
+            open
+          {% endif %}
+      - name: door_state
+        icon: mdi:door
+        state: >
+          {% if is_state('binary_sensor.door_closed', 'on') %}
+            closed
+          {% elif is_state('binary_sensor.door_fully_open', 'on') %}
+            fully open
+          {% else %}
+            open
+          {% endif %}
+      - name: coop_state
+        icon: mdi:home-modern
+        state: >
+          {% if is_state('binary_sensor.coop_open', 'off') %}
+            The coop is locked.
+          {% elif is_state('binary_sensor.coop_fully_open', 'on') %}
+            The coop is fully open.
+          {% else %}
+            The gate is {{states('sensor.gate_state')}}; the door is {{states('sensor.door_state')}}.
+          {% endif %}
+      - name: camera_token
+        state: "{{ state_attr('camera.raspberry_pi_camera', 'access_token') }}"
+  - trigger:
+    - platform: homeassistant
+      event: start
+    - platform: sun
+      event: sunrise
+      offset: 01:30:00
+    - platform: state
+      entity_id: binary_sensor.coop_open
+      from: 'off'
+      to: 'on'
+    sensor:
+      - name: next auto-opening
+        state: >-
+          {% set rising = as_timestamp(state_attr('sun.sun', 'next_rising'))  %}
+          {% set interval_from = rising  %}
+          {% set interval_to = rising + 61*60 %}
+          {{ interval_from | timestamp_custom('%A %d %B') }}, between {{ interval_from | timestamp_custom('%H:%M') }} and {{ interval_to | timestamp_custom('%H:%M') }}
+  - trigger:
+    - platform: homeassistant
+      event: start
+    - platform: sun
+      event: sunset
+      offset: 01:00:00
+    - platform: state
+      entity_id: binary_sensor.coop_fully_open
+      from: 'on'
+      to: 'off'
+    sensor:
+      - name: next auto-closing
+        state: >-
+          {% set setting = as_timestamp(state_attr('sun.sun', 'next_setting'))  %}
+          {% set interval_from = setting  -31*60 %}
+          {% set interval_to = setting + 31*60 %}
+          {{ interval_from | timestamp_custom('%A %d %B') }}, between {{ interval_from | timestamp_custom('%H:%M') }} and {{ interval_to | timestamp_custom('%H:%M') }}
+
+mqtt:
+  broker: !secret mqtt_server
+  discovery_prefix: coopassistant
+
+
+mqtt_statestream:
+  base_topic: coopassistant
+  include:
+    entities:
+      - cover.coop_door
+      - cover.coop_gate
+      - sensor.coop_state
+      - sensor.camera_token
+      - sensor.next_auto_opening
+      - sensor.next_auto_closing
+
+rpi_camera:
+
+image_processing:
+  - platform: doods
+    scan_interval: 60
+    url: "http://192.168.31.95:8080"
+    detector: default
+    source:
+      - entity_id: camera.raspberry_pi_camera
+    file_out: /config/www/doods.jpg
+    confidence: 50
+
+camera:
+  - platform: generic
+    still_image_url: http://192.168.31.95:8123/local/doods.jpg
+    name:  doods
+
+# image_processing:
+#   - platform: opencv
+#     source:
+#       - entity_id: camera.raspberry_pi_camera
+
+automation: !include automations.yaml
