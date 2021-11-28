@@ -8,10 +8,17 @@ frontend:
 # Enables configuration UI
 config:
 
+#default configuration
+input_select:
+
+input_boolean:
+
 system_health:
 
 logger:
   default: info
+  logs:
+    rpi_camera: debug
 
 # Checks for available updates
 updater:
@@ -27,9 +34,6 @@ logbook:
 
 recorder:
   purge_keep_days: 5
-
-shell_command:
-  reboot_pi: 'sudo reboot'
 
 
 # Track the sun
@@ -56,9 +60,9 @@ switch:
     ports:
       20: Door close # 1, orange
       21: Door open # 2, yellow
-      26: Gate close # 3,  green
-      19: Gate open # 4, blue
-    invert_logic: true
+      19: Gate close # 3,  green
+      26: Gate open # 4, blue
+    # invert_logic: true
 
 
 cover:
@@ -120,12 +124,21 @@ cover:
 
 template:
   - binary_sensor:
+      # - name: gate closed
+      #   state: "{{ is_state('binary_sensor.door_closed', 'on') }}"
+      # - name: gate fully open
+      #   state: "{{ is_state('binary_sensor.door_fully_open', 'on') }}"
       - name: coop open
         device_class: safety
         state: "{{ is_state('binary_sensor.door_closed', 'off') or is_state('binary_sensor.gate_closed', 'off') }}"
       - name: coop fully open
         device_class: opening
         state: "{{ is_state('binary_sensor.door_fully_open', 'on') and is_state('binary_sensor.gate_fully_open', 'on') }}"
+      - name: automate gate
+        state: "{{ is_state('input_select.openings_automated', 'both') or is_state('input_select.openings_automated', 'gate only') }}"
+      - name: automate door
+        state: "{{ is_state('input_select.openings_automated', 'both') or is_state('input_select.openings_automated', 'door only') }}"
+
   - sensor:
       - name: gate_state
         icon: mdi:gate
@@ -159,6 +172,8 @@ template:
           {% endif %}
       - name: camera_token
         state: "{{ state_attr('camera.raspberry_pi_camera', 'access_token') }}"
+      - name: camera_token_fix
+        state: "{{ state_attr('camera.coop', 'access_token') }}"
   - trigger:
     - platform: homeassistant
       event: start
@@ -207,25 +222,40 @@ mqtt_statestream:
       - cover.coop_gate
       - sensor.coop_state
       - sensor.camera_token
+      - sensor.camera_token_fix
       - sensor.next_auto_opening
       - sensor.next_auto_closing
 
-rpi_camera:
+# rpi_camera:
 
-image_processing:
-  - platform: doods
-    scan_interval: 60
-    url: "http://192.168.31.95:8080"
-    detector: default
-    source:
-      - entity_id: camera.raspberry_pi_camera
-    file_out: /config/www/doods.jpg
-    confidence: 50
+# image_processing:
+#   - platform: doods
+#     scan_interval: 60
+#     url: "http://192.168.31.95:8080"
+#     detector: default
+#     source:
+#       - entity_id: camera.raspberry_pi_camera
+#     file_out: /config/www/doods.jpg
+#     confidence: 50
 
 camera:
+  # - platform: generic
+  #   still_image_url: http://192.168.31.95:8123/local/doods.jpg
+  #   name:  doods
   - platform: generic
-    still_image_url: http://192.168.31.95:8123/local/doods.jpg
-    name:  doods
+    still_image_url: http://192.168.31.95:8123/local/coop.jpg
+    name:  coop
+
+shell_command:
+  reboot_pi: 'sudo /usr/sbin/reboot'
+  shutdown_pi: '/script/shutdown.sh'
+  ls_script: 'ls /script/'
+
+script:
+  reboot_pi:
+    alias: Reboot my Pi
+    sequence:
+      - service: shell_command.reboot_pi
 
 # image_processing:
 #   - platform: opencv
